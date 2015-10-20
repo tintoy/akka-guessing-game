@@ -1,74 +1,100 @@
 package actors
 
 import java.util.concurrent.atomic.AtomicInteger
-import akka.actor.Actor
+import akka.actor.{FSM, Actor}
 import scala.util.Random
+
+import GuessingGame._
 
 /**
  * Actor that implements a guessing game.
  */
-class GuessingGame extends Actor {
-  /**
-   * The Id of the current game (mainly used for correlation).
-   */
-  val gameId = GuessingGame.nextId.incrementAndGet()
+class GuessingGame extends Actor with FSM[State, Data] {
 
-  /**
-   * The secret number that the players have to guess.
-   */
-  val secretNumber = new Random().nextInt(10) + 1
+  startWith(NewGame,
+    Data(
+      gameId = nextId.incrementAndGet(),
+      secretNumber = new Random().nextInt(10) + 1
+    )
+  )
 
-  var player1Name: String = null
-  var player2Name: String = null
+  when(NewGame) {
+    case Event(Introduce(playerName), data) =>
+      sender ! NotReady(data.gameId, stillWaitingForPlayers = 1)
 
-  /**
-   * The combined number of guesses that both players have made.
-   */
-  var guessCount = 0
+      goto(WaitingForSecondPlayer) using data.copy(
+        playerNames = data.playerNames :+ playerName
+      )
 
-  /**
-   * Once the game has been won, the name of the winning player.
-   */
-  var winningPlayerName: String = null
+    case Event(anyOtherEvent, data) =>
+      sender ! NotReady(data.gameId, stillWaitingForPlayers = 2)
 
-  import GuessingGame._
-
-  // TODO: These guard clauses are overly complicated; this works much better as an FSM actor.
-  override def receive: Receive = {
-    case Introduce(playerName) if player1Name == null =>
-      this.player1Name = playerName
-      sender ! NotReady(gameId, stillWaitingForPlayers = 1)
-    case Introduce(playerName) if player2Name == null =>
-      this.player2Name = playerName
-      sender ! Ready(gameId)
-      sender ! YourTurn(gameId, currentPlayerName)
-    case Introduce(playerName) =>
-      sender ! GameInProgress(gameId)
-    case Guess(playerName, value: Int) if player1Name == null =>
-      sender ! NotReady(gameId, stillWaitingForPlayers = 2)
-    case Guess(playerName, value: Int) if player2Name == null =>
-      sender ! NotReady(gameId, stillWaitingForPlayers = 1)
-    case Guess(playerName, value: Int) if winningPlayerName != null =>
-      sender ! NotReady(gameId, stillWaitingForPlayers = 1)
-    case Guess(playerName, value: Int) if playerName != currentPlayerName =>
-      sender ! NotYourTurn(gameId, currentPlayerName)
-    case Guess(playerName, value) =>
-      guessCount += 1
-      if (value != secretNumber) {
-        val hint = if (secretNumber > value) Higher else Lower
-
-        sender ! NopeTryAgain(gameId, currentPlayerName, value, hint)
-      }
-      else
-        sender ! Win(gameId, playerName, value, guessCount)
+      stay()
   }
+  when(WaitingForSecondPlayer) {
+    case Event(Introduce(playerName), data) =>
+      val updatedPlayerNames = data.playerNames :+ playerName
+      val updatedCurrentPlayer = updatedPlayerNames.last
 
-  /**
-   * The name of the player whose turn it is to play.
-   * @return
-   */
-  def currentPlayerName: String = {
-    if ((guessCount + 1) % 2 == 0) player1Name else player2Name
+      sender ! Ready(data.gameId)
+      sender ! YourTurn(data.gameId, updatedCurrentPlayer)
+
+      goto(Playing) using data.copy(
+        playerNames = updatedPlayerNames,
+        currentPlayer = updatedPlayerNames.indexOf(playerName)
+      )
+
+    case Event(anyOtherEvent, data) =>
+      sender ! NotReady(data.gameId, stillWaitingForPlayers = 1)
+
+      stay()
+  }
+  when(Playing) {
+    case Event(Guess(playerName, value), data) if !data.currentPlayerName.contains(playerName) =>
+      sender ! NotYourTurn(data.gameId, data.currentPlayerName.get)
+
+      stay()
+
+    case Event(Guess(playerName, value), data) =>
+      val currentGuessCount = data.guessCount + 1
+      val nextPlayer = (data.currentPlayer + 1) % data.playerNames.size
+      if (value == data.secretNumber) {
+        sender ! Won(data.gameId, playerName, value, currentGuessCount)
+        
+        goto(Over) using data.copy(
+          guessCount = currentGuessCount,
+          winningPlayerName = data.currentPlayerName.get
+        )
+      }
+      else {
+        val correctiveHint = if (value > data.secretNumber) Lower else Higher
+
+        sender ! NopeTryAgain(data.gameId,
+          nextPlayerName = data.playerNames(nextPlayer),
+          incorrectValue = value,
+          hint = correctiveHint
+        )
+
+        stay using data.copy(
+          currentPlayer = nextPlayer,
+          guessCount = currentGuessCount
+        )
+      }
+    case Event(anyOtherEvent, data) =>
+      sender ! GameInProgress(data.gameId)
+
+      stay()
+  }
+  when(Over) {
+    case Event(anyEvent, data) =>
+      sender ! GameOver(
+        data.gameId,
+        data.winningPlayerName,
+        data.secretNumber,
+        data.guessCount
+      )
+
+      stay()
   }
 }
 
@@ -77,6 +103,53 @@ class GuessingGame extends Actor {
  */
 object GuessingGame
 {
+  /**
+   * Represents the state for the guessing game.
+   */
+  sealed abstract class State
+
+  /**
+   * State representing a new guessing game.
+   */
+  private case object NewGame extends State
+
+  /**
+   * State representing a guessing game waiting for a second player.
+   */
+  private case object WaitingForSecondPlayer extends State
+
+  /**
+   * State representing a guessing game that is in progress.
+   */
+  private case object Playing extends State
+
+  /**
+   * State representing a guessing game that has been completed.
+   */
+  private case object Over extends State
+
+  /**
+   * Represents state data for the guessing game.
+   * @param gameId The game Id.
+   * @param secretNumber The secret number that the players have to guess.
+   * @param playerNames The names of the players participating in the game.
+   * @param currentPlayer The 0-based index (in `playerNames`) of the name of the player whose turn is next.
+   * @param guessCount The combined number of guesses that both players have made.
+   * @param winningPlayerName Once the game has been won, the name of the winning player.
+   */
+  sealed case class Data(
+      gameId: Int,
+      secretNumber: Int,
+      playerNames: List[String] = List[String](),
+      currentPlayer: Int = 0,
+      guessCount: Int = 0,
+      winningPlayerName: String = null) {
+
+    def currentPlayerName: Option[String] = {
+      if (currentPlayer != -1) Some(playerNames(currentPlayer)) else None
+    }
+  }
+
   /**
    * The Id to be allocated to the next game.
    */
@@ -168,14 +241,14 @@ object GuessingGame
    * @param winningGuess The value of the winning guess.
    * @param guessCount The number of guesses before the secret number was found.
    */
-  case class Win(gameId: Int, winningPlayerName: String, winningGuess: Int, guessCount: Int) extends GameMessage(gameId)
+  case class Won(gameId: Int, winningPlayerName: String, winningGuess: Int, guessCount: Int) extends GameMessage(gameId)
 
   /**
    * The game indicates that the player has lost the game.
    * @param gameId The Id of the game to which the message relates.
    * @param winningPlayerName The name of the winning player.
    * @param winningGuess The value of the winning guess.
-   * @param guessCount
+   * @param guessCount The number of guesses before the secret number was found.
    * @note Not used yet.
    */
   case class Lose(gameId: Int, winningPlayerName: String, winningGuess: Int, guessCount: Int) extends GameMessage(gameId)

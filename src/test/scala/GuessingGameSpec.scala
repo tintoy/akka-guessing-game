@@ -51,7 +51,7 @@ class GuessingGameSpec
 
     // Ensure there are no outstanding messages.
     expectNoMsg(
-      max = 10 milliseconds
+      max = 10.milliseconds
     )
   }
 
@@ -72,7 +72,7 @@ class GuessingGameSpec
 
   "New guessing game" should {
     "reply that it is not ready when the first player is introduced" in {
-      within(500 milliseconds) {
+      within(500.milliseconds) {
         gameRef ! Introduce(player1Name)
         expectMsg(
           NotReady(currentGameId, stillWaitingForPlayers = 1)
@@ -81,7 +81,7 @@ class GuessingGameSpec
     }
 
     "reply that it is not ready if any player makes a guess" in {
-      within(500 milliseconds) {
+      within(500.milliseconds) {
         gameRef ! Guess(player1Name, 9)
         expectMsg(
           NotReady(currentGameId, stillWaitingForPlayers = 2)
@@ -92,7 +92,7 @@ class GuessingGameSpec
 
   "Guessing game with one player" should {
     "reply that it is ready when the second player is introduced" in {
-      within(500 milliseconds) {
+      within(500.milliseconds) {
         // Player 1
         gameRef ! GuessingGame.Introduce(player1Name)
         expectMsg(
@@ -111,7 +111,7 @@ class GuessingGameSpec
     }
 
     "reply that it is not ready if the first player makes a guess" in {
-      within(500 milliseconds) {
+      within(500.milliseconds) {
         gameRef ! Introduce(player1Name)
         expectMsg(
           NotReady(currentGameId, stillWaitingForPlayers = 1)
@@ -127,7 +127,7 @@ class GuessingGameSpec
 
   "Guessing game with two players" should {
     "tell player 2 to go first" in {
-      within(200 milliseconds) {
+      within(200.milliseconds) {
         gameRef ! Introduce(player1Name)
         expectMsg(
           NotReady(currentGameId, stillWaitingForPlayers = 1)
@@ -144,7 +144,7 @@ class GuessingGameSpec
     }
 
     "reply to a player when they attempt guess out-of-turn" in {
-      within(200 milliseconds) {
+      within(200.milliseconds) {
         gameRef ! Introduce(player1Name)
         expectMsg(
           NotReady(currentGameId, stillWaitingForPlayers = 1)
@@ -166,7 +166,7 @@ class GuessingGameSpec
     }
 
     "reply to each player when they attempt to guess the secret number" in {
-      within(2 seconds) {
+      within(2.seconds) {
         gameRef ! Introduce(player1Name)
         expectMsg(
           NotReady(currentGameId, stillWaitingForPlayers = 1)
@@ -192,15 +192,19 @@ class GuessingGameSpec
           currentGuessCount should (be > 0)
           currentGuessCount should (be <= maxSecretNumber)
 
+          note(s"Player $currentPlayerName makes guess $currentGuessCount with value $currentGuess.")
+
           gameRef ! Guess(currentPlayerName, currentGuess)
           expectMsgClass(classOf[GameMessage]) match {
-            case Win(gameId, playerName, correctValue, guessCount) =>
+            case Won(gameId, playerName, correctValue, guessCount) =>
               gameId should be(currentGameId)
               playerName should be(currentPlayerName)
               correctValue should be(currentGuess)
               guessCount should be(currentGuessCount)
 
               won = true
+
+              note(s"Player $currentPlayerName correctly chose value $currentGuess for guess $currentGuessCount!")
 
             case NopeTryAgain(gameId, playerName, incorrectValue, hint) =>
               gameId should be(currentGameId)
@@ -211,6 +215,8 @@ class GuessingGameSpec
                 case Lower => currentGuess -= 1
                 case Higher => currentGuess += 1
               }
+
+              note(s"Player $currentPlayerName incorrectly chose value $currentGuess for guess $currentGuessCount (hint: $hint).")
           }
 
           // Swap players
